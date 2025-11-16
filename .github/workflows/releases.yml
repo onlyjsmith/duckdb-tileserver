@@ -44,11 +44,6 @@ jobs:
             asset_name: duckdb-tileserver-linux-amd64
           - os: macos-latest
             goos: darwin
-            goarch: amd64
-            artifact_name: duckdb-tileserver
-            asset_name: duckdb-tileserver-darwin-amd64
-          - os: macos-latest
-            goos: darwin
             goarch: arm64
             artifact_name: duckdb-tileserver
             asset_name: duckdb-tileserver-darwin-arm64
