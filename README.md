@@ -30,9 +30,7 @@ For a complete list of implemented features, see [FEATURES.md](FEATURES.md).
 
 Builds of the latest code:
 
-* [Linux](https://artifacts.serverless-duckdb.com/duckdb-tileserver_latest_linux.zip)
-* [Windows](https://artifacts.serverless-duckdb.com/duckdb-tileserver_latest_windows.zip)
-* [MacOS](https://artifacts.serverless-duckdb.com/duckdb-tileserver_latest_macos.zip)
+* [GitHub Releases (Linux/MacOS/Windows binaries)](https://github.com/tobilg/duckdb-tileserver/releases)
 * [Docker image](https://hub.docker.com/repository/docker/tobilg/duckdb-tileserver/general)
 
 ## Preparing Your Database
