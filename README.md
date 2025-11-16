@@ -35,6 +35,194 @@ Builds of the latest code:
 * [MacOS](https://artifacts.serverless-duckdb.com/duckdb-tileserver_latest_macos.zip)
 * [Docker image](https://hub.docker.com/repository/docker/tobilg/duckdb-tileserver/general)
 
+## Preparing Your Database
+
+To use duckdb-tileserver, you need a DuckDB database with spatial data. This section covers how to prepare your database properly.
+
+### Prerequisites
+
+1. **Install DuckDB CLI**: Download from [duckdb.org](https://duckdb.org/docs/installation/)
+2. **Load the Spatial Extension**: The spatial extension provides geometry types and functions
+
+### Basic Setup
+
+```sql
+-- Load the spatial extension
+INSTALL spatial;
+LOAD spatial;
+
+-- Create a table with a geometry column
+CREATE TABLE buildings (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR,
+    geom GEOMETRY
+);
+
+-- Insert some data (example using WKT)
+INSERT INTO buildings VALUES
+    (1, 'Building A', ST_GeomFromText('POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))'));
+```
+
+### Importing Data
+
+#### From Shapefiles
+
+```sql
+LOAD spatial;
+
+-- Import shapefile directly
+COPY buildings FROM 'buildings.shp' WITH (FORMAT GDAL, DRIVER 'ESRI Shapefile');
+```
+
+#### From GeoJSON
+
+```sql
+LOAD spatial;
+
+-- Import GeoJSON file
+COPY buildings FROM 'buildings.geojson' WITH (FORMAT GDAL, DRIVER 'GeoJSON');
+```
+
+#### From GeoParquet
+
+```sql
+LOAD spatial;
+
+-- Read GeoParquet file
+CREATE TABLE buildings AS
+    SELECT * FROM ST_Read('buildings.parquet');
+```
+
+#### From PostGIS
+
+```sql
+LOAD spatial;
+INSTALL postgres;
+LOAD postgres;
+
+-- Attach PostgreSQL database
+ATTACH 'dbname=mydb user=postgres host=localhost' AS pg (TYPE postgres);
+
+-- Copy data from PostGIS
+CREATE TABLE buildings AS
+    SELECT id, name, geom::GEOMETRY as geom
+    FROM pg.public.buildings;
+```
+
+### Setting the Spatial Reference System (SRID)
+
+For best performance, set your geometries to EPSG:3857 (Web Mercator). If your data uses a different SRID, you can transform it:
+
+```sql
+-- Check current SRID
+SELECT DISTINCT ST_SRID(geom) FROM buildings;
+
+-- Transform to Web Mercator (EPSG:3857)
+UPDATE buildings
+SET geom = ST_Transform(geom, 'EPSG:4326', 'EPSG:3857');
+
+-- Or create a new column with transformed geometries
+ALTER TABLE buildings ADD COLUMN geom_3857 GEOMETRY;
+UPDATE buildings
+SET geom_3857 = ST_Transform(geom, 'EPSG:4326', 'EPSG:3857');
+```
+
+### Creating Spatial Indexes
+
+R-Tree indexes significantly improve tile generation performance:
+
+```sql
+-- Create R-Tree spatial index on geometry column
+CREATE INDEX buildings_geom_idx ON buildings USING RTREE (geom);
+
+-- Verify index was created
+SELECT * FROM duckdb_indexes() WHERE table_name = 'buildings';
+```
+
+### Validating Your Data
+
+Ensure your geometries are valid before serving tiles:
+
+```sql
+-- Check for invalid geometries
+SELECT id, ST_IsValid(geom) as is_valid, ST_IsValidReason(geom) as reason
+FROM buildings
+WHERE NOT ST_IsValid(geom);
+
+-- Fix invalid geometries
+UPDATE buildings
+SET geom = ST_MakeValid(geom)
+WHERE NOT ST_IsValid(geom);
+```
+
+### Optimizing for Zoom Levels
+
+For large datasets, consider creating simplified versions for lower zoom levels:
+
+```sql
+-- Create simplified geometries for overview zoom levels
+CREATE TABLE buildings_simplified AS
+SELECT
+    id,
+    name,
+    ST_Simplify(geom, 100) as geom  -- Simplify with 100m tolerance
+FROM buildings
+WHERE ST_Area(geom) > 10000;  -- Only keep larger features
+
+-- Create spatial index on simplified table
+CREATE INDEX buildings_simplified_geom_idx
+    ON buildings_simplified USING RTREE (geom);
+```
+
+### Example: Complete Database Setup
+
+```sql
+-- Create database and load extensions
+INSTALL spatial;
+LOAD spatial;
+
+-- Import data from GeoJSON
+COPY buildings FROM 'buildings.geojson' WITH (FORMAT GDAL, DRIVER 'GeoJSON');
+
+-- Transform to Web Mercator if needed
+UPDATE buildings
+SET geom = ST_Transform(geom, 'EPSG:4326', 'EPSG:3857')
+WHERE ST_SRID(geom) = 4326;
+
+-- Validate and fix geometries
+UPDATE buildings
+SET geom = ST_MakeValid(geom)
+WHERE NOT ST_IsValid(geom);
+
+-- Create spatial index
+CREATE INDEX buildings_geom_idx ON buildings USING RTREE (geom);
+
+-- Verify setup
+SELECT
+    COUNT(*) as feature_count,
+    ST_SRID(geom) as srid,
+    ST_GeometryType(geom) as geometry_type
+FROM buildings
+GROUP BY ST_SRID(geom), ST_GeometryType(geom);
+```
+
+### Supported Geometry Types
+
+DuckDB Spatial supports all standard OGC geometry types:
+
+* **POINT** / **MULTIPOINT** - For point features (POIs, markers)
+* **LINESTRING** / **MULTILINESTRING** - For linear features (roads, rivers)
+* **POLYGON** / **MULTIPOLYGON** - For area features (buildings, parcels)
+* **GEOMETRYCOLLECTION** - Mixed geometry types
+
+### Tips
+
+* **Column naming**: The tileserver auto-detects geometry columns - use standard names like `geom`, `geometry`, or `wkb_geometry`
+* **Multiple geometry columns**: If a table has multiple geometry columns, the tileserver uses the first one and logs a warning
+* **Data types**: All standard DuckDB data types are preserved in tile properties
+* **File size**: DuckDB uses columnar compression - expect significant space savings compared to shapefiles
+* **Read-only mode**: The tileserver opens databases in read-only mode, so your data is safe
+
 ## Quick Start
 
 ### 1. Prepare Your Data
@@ -353,7 +541,10 @@ This creates four sample layers:
 
 ## Performance Tips
 
-1. **Spatial Indexes**: DuckDB Spatial automatically creates R-Tree indexes for geometry columns
+1. **Spatial Indexes**: Create R-Tree indexes on geometry columns for better performance:
+   ```sql
+   CREATE INDEX buildings_geom_idx ON buildings USING RTREE (geom);
+   ```
 2. **Coordinate Reference System**: Store data in EPSG:3857 (Web Mercator) to avoid transformation overhead
 3. **Connection Pooling**: The Go database/sql package handles connection pooling automatically
 4. **Table Filtering**: Use `TableIncludes` to serve only necessary tables
@@ -386,7 +577,7 @@ Debug = true
 - Ensure geometries are valid: `SELECT ST_IsValid(geometry) FROM your_table`
 
 **Slow tile generation:**
-- Check if spatial indexes exist (automatic in DuckDB Spatial)
+- Create R-Tree spatial indexes on geometry columns if not already present
 - Consider filtering data by zoom level
 - Pre-aggregate data for lower zoom levels
 
